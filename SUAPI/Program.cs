@@ -1,23 +1,24 @@
 using Microsoft.AspNetCore.Hosting;
-using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Hosting;
-using Microsoft.Extensions.Logging;
 using System;
-using System.Collections.Generic;
 using System.Diagnostics;
-using System.Linq;
-using System.Threading.Tasks;
 using System.Reflection;
 using System.IO;
+using System.Threading;
 
 namespace SyncUpAPI {
     public class Program {
         public static void Main(string[] args)
         {
+            Thread ticker = new Thread(Universe.DoTick);
+            ticker.Start();
             Console.CancelKeyPress += delegate
             {
                 Logg.printInfo("Ctrl-C pressed...");
                 Logg.printInfo("Shutting down server and exiting program");
+                Logg.printInfo("Waiting for ticker thread to join...");
+                Universe.END_OF_WORLD = true;
+                ticker.Join();
                 Logg.printInfo("Press any key to close this window");
                 Console.ReadKey();
             };
@@ -35,7 +36,7 @@ namespace SyncUpAPI {
                     .UseContentRoot(Directory.GetCurrentDirectory())
                     .UseIISIntegration()
                     .UseStartup<Startup>()
-                    .UseUrls($"https://localhost:{port}")
+                    .UseUrls($"https://*:{port}")
                     .Build();
                 host.Run();
             }
