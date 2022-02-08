@@ -6,6 +6,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Diagnostics;
 using System.Web;
+using System.Threading;
 
 namespace SyncUp
 {
@@ -13,27 +14,34 @@ namespace SyncUp
     {
         static void Main(string[] args)
         {
+            Universe.UpdateCheck();
+
             List<string> LIPs = Universe.getLocalIP();
             string PIP = Universe.getPublicIP();
             string status = "SEND";
-            
+            string SERVER = Universe.getSettings()["SERVER"];
+            int PORT = int.Parse(Universe.getSettings()["PORT"]);
+            string USERID = Universe.getSettings()["USERHASH"];
+
             // make sure the user registered with this program is a real user
-            const string USERID = "ALPHA_VERSION_PLACEBO_HASH";
-            string url = $"https://localhost:8080/auth/userauth?hash={USERID}&PIP={HttpUtility.HtmlEncode(Universe.B64Encode(PIP))}&LIP={HttpUtility.HtmlEncode(Universe.B64Encode(Universe.ToJSON(LIPs)))}&status={status}";
+            string url = $"https://{SERVER}:{PORT}/auth/userauth?hash={USERID}&PIP={HttpUtility.HtmlEncode(Universe.B64Encode(PIP))}&LIP={HttpUtility.HtmlEncode(Universe.B64Encode(Universe.ToJSON(LIPs)))}&status={status}";
             string response = Universe.getRequest(url);
-            if (response.Equals("user_authentic"))
-                Console.WriteLine("User authenticated; continuing");
+            if (response.Contains("user_authentic"))
+                Terminal.printInfo("User authenticated; continuing");
             else if (response.Equals("SERVER_UNRESPONSIVE")) {
-                Console.WriteLine("ERROR! :: program authentication server could not be found\nCANNOT CONTINUE!!!\n");
+                Terminal.printError("Program authentication server could not be found\nCANNOT CONTINUE!!!\n");
                 Terminal.exitOnKeyPress();
                 Environment.Exit(404);
             }
             else
             {
-                Console.WriteLine("USER NOT AUTHENTIC... EXITTING!");
+                Terminal.printError("USER NOT AUTHENTIC... EXITTING!");
                 Terminal.exitOnKeyPress();
                 Environment.Exit(1);
             }
+
+
+
             //Start a timer to see how long the entire operation will take
             Stopwatch stopwatch = new Stopwatch();
             stopwatch.Start();
@@ -55,7 +63,7 @@ namespace SyncUp
                 //prep variables for change comparison
                 int passes = 0;
                 int fails = 0;
-                List<String> changedFiles = new List<String>();
+                Dictionary<String, String> changedFiles = new Dictionary<String, String>();
                 //iterate over all file hashes (new and old) to see what's new
                 foreach (System.Collections.Generic.KeyValuePair<string, string> hash in oldHashes)
                 {
@@ -67,42 +75,105 @@ namespace SyncUp
                         //if new hash doesn't match old one, then add it to list of files to be further processed
                         else
                         {
-                            changedFiles.Add(hash.Key);
+                            changedFiles.Add(hash.Key, hash.Value);
                             fails++;
                         }
                     }
                     //file may have been deleted so catch an exception in the case that a key value doesn't exist
                     catch (Exception e)
                     {
-                        Console.WriteLine(e.Message); //tell user and count the fail
+                        Terminal.printError(e.Message); //tell user and count the fail
                         fails++;
                         Universe.errors++;
                     }
                 }
+                //WAIT FOR ALL CLEAR FROM API!!!!!!!!!!!!!!!:
+                string SESSION_ID = response.Split("&")[1];
+                string[] parameters = { };
+                Terminal.printInfo("Waiting for recipient PC...");
+                while (true)
+                {
+                    string waiting = $"https://{SERVER}:{PORT}/auth/qss?hash={USERID}&sessID={SESSION_ID}";
+                    string resp = Universe.getRequest(waiting);
+                    if (resp.Contains("match&"))
+                    {
+                        parameters = resp.Split("&");
+                        break;
+                    }
+                    Thread.Sleep(500);
+                }
+
+                //If public IPs are in common, find the interface that both PCs are on
+                List<string> remoteLIPs = System.Text.Json.JsonSerializer.Deserialize<List<string>>(Universe.B64Decode(parameters[2]));
+                List<string[]> LIPsDigested = new List<string[]>();
+                string TARGET_IP = string.Empty;
+                foreach (string i in LIPs) { LIPsDigested.Add(i.Split('.')); }
+                if (PIP.Equals(parameters[1]))
+                {
+                    Terminal.printInfo("\nPublic IP addresses identical");
+                    foreach (string[] LIP in LIPsDigested)
+                    {
+                        string subnet = LIP[0] + LIP[1] + LIP[2];
+                        Terminal.printInfo("Local subnet: " + subnet);
+                        foreach (string RIP in remoteLIPs)
+                        {
+                            string[] t = RIP.Split('.');
+                            string rSubnet = t[0] + t[1] + t[2];
+                            Terminal.printInfo("Trying against remote subnet: " + rSubnet);
+                            if (subnet.Equals(rSubnet))
+                            {
+                                TARGET_IP = RIP;
+                                Terminal.printInfo("Found subnet match: " + TARGET_IP);
+                                break;
+                            }
+                        }
+                    }
+                }
+                else
+                {
+                    Terminal.printInfo("Public IP addresses are different");
+                    TARGET_IP = SERVER;
+                }
+                if (TARGET_IP.Equals(string.Empty)) TARGET_IP = SERVER;
+
                 //Update hashes file
                 Console.Write("Updating hash file... ");
                 string[] lines = { System.Text.Json.JsonSerializer.Serialize(Universe.everything) };
                 File.WriteAllLines(tempFolder + "\\hashes.metric", lines);
-                Console.WriteLine("[DONE]");
+                Terminal.printInfo("[DONE]");
                 //Tell how many things worked and didn't
-                Console.WriteLine($"\n\nA total of {Universe.errors} errors occured while processing all data");
-                Console.WriteLine($"{passes} files remain unchanged on disk\n{fails} files changed\n");
+                Terminal.printInfo($"\n\nA total of {Universe.errors} errors occured while processing all data");
+                Terminal.printInfo($"{passes} files remain unchanged on disk");
+                Terminal.printWarning($"{fails} files changed\n");
+                Terminal.printInfo($"Preparing to transfer {changedFiles.Count} changed files...");
 
-                foreach (String i in changedFiles)
+                changedFiles.Add("TARGET_IP_ADDRESS", remoteLIPs[0]);                 //TODO:::::::::: get the real target IP and put it here |
+                Terminal.printInfo($"!!!!!!!!!!!USING IP ADDRESS: {remoteLIPs[0]} for transfer");
+                string cmdLineArg = System.Text.Json.JsonSerializer.Serialize(changedFiles);
+                if (TARGET_IP.Equals(SERVER))
                 {
-                    Console.WriteLine($"{i} changed on disk, preparing to transfer");
+                    Terminal.printInfo("Starting SUFTP over LAN...");
+                    Terminal.printInfo(startOnLAN($"'{cmdLineArg}'"));
+                    Terminal.printInfo("Files transferred");
+                }
+                else
+                {
+                    Terminal.printInfo("Starting SUFTP over internet...");
+                    Terminal.printInfo(startOverInet($"'{cmdLineArg}'"));
+                    Terminal.printInfo("Files transferred");
+
                 }
                 Console.Write("\n\n");
             }
             //Andddddddd if the hash file isn't saved then create a whole new one and exit
             catch (System.IO.FileNotFoundException)
             {
-                Console.WriteLine("HASH FILE DOES NOT EXIST!\nCreating new file... (this may take a bit)");
+                Terminal.printWarning("HASH FILE DOES NOT EXIST!\nCreating new file... (this may take a bit)");
                 try { getHashes(home, tempFolder, true); } //create file
                 //if something goes wrong tell and quit
                 catch (Exception e)
                 {
-                    Console.WriteLine("Sorry... we ran into a problem while parsing data: " + e.Message+"\nPlease report this problem and error message to the developer.");
+                    Terminal.printError("Sorry... we ran into a problem while parsing data: " + e.Message+"\nPlease report this problem and error message to the developer.");
                 }
             }
 
@@ -113,42 +184,44 @@ namespace SyncUp
             string elapsedTime = String.Format("{0:00}:{1:00}:{2:00}.{3:00}",
                 ts.Hours, ts.Minutes, ts.Seconds,
                 ts.Milliseconds / 10);
-            Console.WriteLine("RunTime " + elapsedTime);
+            Terminal.printInfo("RunTime " + elapsedTime);
             Terminal.exitOnKeyPress();
 
         }
-        static void getHashes(string home, string tempFolder, bool flushToFile)
+            static void getHashes(string home, string tempFolder, bool flushToFile)
         {
             try
             {
                 //Count total number of files in target directory for stats during execution
-                Universe.totalFiles = countFiles(home + "\\Desktop");
+                Universe.totalFiles = countFiles(home + "\\Desktop");  //original
                 //Print some diagnostic data
-                Console.WriteLine($"Using variables:\nHOME PATH: {home}\nTEMP PATH: {tempFolder}\nITEMS IN DESKTOP: {Universe.totalFiles}\n");
-                listDirRecursive(home + "\\Desktop");
+                Terminal.printInfo($"Using variables:\nHOME PATH: {home}\nTEMP PATH: {tempFolder}\nITEMS IN DESKTOP: {Universe.totalFiles}\n");
+                listDirRecursive(home + "\\Desktop");                  //original
+
+
                 //if hashes are supposed to be flushed to file, then do that
                 if (flushToFile) { 
                     string[] lines = { System.Text.Json.JsonSerializer.Serialize(Universe.everything) };
                     File.WriteAllLines(tempFolder + "\\hashes.metric", lines);
                 }
-                Console.WriteLine($"\n{Universe.errors} permission errors occured while processing the data");
+                Terminal.printInfo($"\n{Universe.errors} permission errors occured while processing the data");
             }
             catch (System.IO.DirectoryNotFoundException)
             {
                 string Dtop = (home + "\\OneDrive\\Desktop");
                 Universe.totalFiles = countFiles(Dtop);
-                Console.WriteLine($"Using variables:\nHOME PATH: {home}\nTEMP PATH: {tempFolder}\nITEMS IN DESKTOP: {Universe.totalFiles}\n\n");
+                Terminal.printInfo($"Using variables:\nHOME PATH: {home}\nTEMP PATH: {tempFolder}\nITEMS IN DESKTOP: {Universe.totalFiles}");
                 listDirRecursive(Dtop);
                 if (flushToFile) {
                     string[] lines = { System.Text.Json.JsonSerializer.Serialize(Universe.everything) };
                     File.WriteAllLines(tempFolder + "\\hashes.metric", lines);
                 }
-                Console.WriteLine($"\n{Universe.errors} errors occured while processing the data");
+                Terminal.printWarning($"\n{Universe.errors} errors occured while processing the data");
             }
             catch (Exception e)
             {
-                Console.WriteLine(e.Message);
-                Console.ReadKey();
+                Terminal.printError(e.Message);
+                Terminal.exitOnKeyPress();
             }
         }
         static void listDirRecursive(String path)
@@ -230,7 +303,38 @@ namespace SyncUp
             }
             return files;
         }
+        public static string startOnLAN(string arguments)
+        {
+            Process p = new Process();
+            // Redirect the output stream of the child process.
+            p.StartInfo.UseShellExecute = false;
+            p.StartInfo.RedirectStandardOutput = true;
+            p.StartInfo.Arguments = $@"{arguments}";
+            p.StartInfo.FileName = "\"C:\\Program Files\\SyncUp\\SUFTP\\SUFTP-client.exe\"";
+            Terminal.printInfo(p.StartInfo.FileName+" "+p.StartInfo.Arguments); ////////////////////////////////////////////////////////////////////////////
+            p.Start();
+            // Do not wait for the child process to exit before
+            // reading to the end of its redirected stream.
+            // p.WaitForExit();
+            // Read the output stream first and then wait.
+            string response = p.StandardOutput.ReadToEnd();
+            p.WaitForExit();
+            return response;
+        }
+        public static string startOverInet(string arguments)
+        {
+            Process p = new Process();
+            // Redirect the output stream of the child process.
+            p.StartInfo.UseShellExecute = false;
+            p.StartInfo.RedirectStandardOutput = true;
+            p.StartInfo.Arguments = $@"{arguments}";
+            p.StartInfo.FileName = "\"C:\\Program Files\\SyncUp\\SUFTP\\SUFTP-send.exe\"";
+            Terminal.printInfo(p.StartInfo.FileName + " " + p.StartInfo.Arguments); ////////////////////////////////////////////////////////////////////////////
+            p.Start();
+
+            string response = p.StandardOutput.ReadToEnd();
+            p.WaitForExit();
+            return response;
+        }
     }
-
-
 }
