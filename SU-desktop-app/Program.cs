@@ -24,11 +24,10 @@ namespace SyncUp
             string USERID = Universe.getSettings()["USERHASH"];
 
             // make sure the user registered with this program is a real user
-            string url = $"https://{SERVER}:{PORT}/auth/userauth?hash={USERID}&PIP={HttpUtility.HtmlEncode(Universe.B64Encode(PIP))}&LIP={HttpUtility.HtmlEncode(Universe.B64Encode(Universe.ToJSON(LIPs)))}&status={status}";
-            string response = Universe.getRequest(url);
-            if (response.Contains("user_authentic"))
+            string userAuthResp = Universe.getRequest($"https://{SERVER}:{PORT}/auth/userauthho?hash={USERID}");
+            if (userAuthResp.Contains("user_authentic"))
                 Terminal.printInfo("User authenticated; continuing");
-            else if (response.Equals("SERVER_UNRESPONSIVE")) {
+            else if (userAuthResp.Equals("SERVER_UNRESPONSIVE")) {
                 Terminal.printError("Program authentication server could not be found\nCANNOT CONTINUE!!!\n");
                 Terminal.exitOnKeyPress();
                 Environment.Exit(404);
@@ -57,7 +56,8 @@ namespace SyncUp
                 var oldHashes = JsonConvert.DeserializeObject<Dictionary<string, string>>(stream[0]); //<- may be able to save highly changed files on line 2 or something to provide "quick search" vs "full search" options for user
                 stream = null; //clear up some memory since string[] stream has already been processed (no longer needed)
                 GC.Collect();
-
+                string url = $"https://{SERVER}:{PORT}/auth/userauth?hash={USERID}&PIP={HttpUtility.HtmlEncode(Universe.B64Encode(PIP))}&LIP={HttpUtility.HtmlEncode(Universe.B64Encode(Universe.ToJSON(LIPs)))}&status={status}";
+                string response = Universe.getRequest(url);
                 //Calculate new hashes and save
                 getHashes(home, tempFolder, false);
                 //prep variables for change comparison
@@ -70,7 +70,7 @@ namespace SyncUp
                     try
                     {
                         //if new hash matches old hash then don't worry about it
-                        if (Universe.everything[hash.Key] == oldHashes[hash.Key])
+                        if (Universe.everything[hash.Key].Equals(oldHashes[hash.Key]))
                             passes++;
                         //if new hash doesn't match old one, then add it to list of files to be further processed
                         else
@@ -88,9 +88,19 @@ namespace SyncUp
                     }
                 }
                 //WAIT FOR ALL CLEAR FROM API!!!!!!!!!!!!!!!:
-                string SESSION_ID = response.Split("&")[1];
-                string[] parameters = { };
+                string SESSION_ID = "";
                 Terminal.printInfo("Waiting for recipient PC...");
+                try
+                {
+                    SESSION_ID= response.Split("&")[1];
+                }
+                catch (Exception)
+                {
+                    Terminal.printError("There was a fatal error authenticating this session.");
+                    Terminal.printErrorDetails("Close this window and start SyncUp again on both PCs you want to tranfser between");
+                    Terminal.exitOnKeyPress();
+                }
+                string[] parameters = { };
                 while (true)
                 {
                     string waiting = $"https://{SERVER}:{PORT}/auth/qss?hash={USERID}&sessID={SESSION_ID}";
@@ -102,39 +112,34 @@ namespace SyncUp
                     }
                     Thread.Sleep(500);
                 }
-
+                Universe.getRequest($"https://{SERVER}:{PORT}/error/errorCheck?sessID={SESSION_ID}&status=SET&data=no_error");
+                string TARGET_IP = SERVER;
                 //If public IPs are in common, find the interface that both PCs are on
                 List<string> remoteLIPs = System.Text.Json.JsonSerializer.Deserialize<List<string>>(Universe.B64Decode(parameters[2]));
+                string RemotePIP = Universe.B64Decode(parameters[1]);
                 List<string[]> LIPsDigested = new List<string[]>();
-                string TARGET_IP = string.Empty;
+                bool BREAK_ALL = false;
                 foreach (string i in LIPs) { LIPsDigested.Add(i.Split('.')); }
-                if (PIP.Equals(parameters[1]))
+                if (PIP.Equals(RemotePIP))
                 {
-                    Terminal.printInfo("\nPublic IP addresses identical");
                     foreach (string[] LIP in LIPsDigested)
                     {
-                        string subnet = LIP[0] + LIP[1] + LIP[2];
-                        Terminal.printInfo("Local subnet: " + subnet);
+                        string subnet = LIP[0] + "." + LIP[1] + "." + LIP[2] + ".0";
                         foreach (string RIP in remoteLIPs)
                         {
                             string[] t = RIP.Split('.');
-                            string rSubnet = t[0] + t[1] + t[2];
-                            Terminal.printInfo("Trying against remote subnet: " + rSubnet);
+                            string rSubnet = t[0] + "." + t[1] + "." + t[2] + ".0";
                             if (subnet.Equals(rSubnet))
                             {
+                                Terminal.printInfo($"FOUND IP ADDRESS MATCH {RIP}");
                                 TARGET_IP = RIP;
-                                Terminal.printInfo("Found subnet match: " + TARGET_IP);
+                                BREAK_ALL = true;
                                 break;
                             }
                         }
+                        if (BREAK_ALL) break;
                     }
                 }
-                else
-                {
-                    Terminal.printInfo("Public IP addresses are different");
-                    TARGET_IP = SERVER;
-                }
-                if (TARGET_IP.Equals(string.Empty)) TARGET_IP = SERVER;
 
                 //Update hashes file
                 Console.Write("Updating hash file... ");
@@ -142,28 +147,34 @@ namespace SyncUp
                 File.WriteAllLines(tempFolder + "\\hashes.metric", lines);
                 Terminal.printInfo("[DONE]");
                 //Tell how many things worked and didn't
-                Terminal.printInfo($"\n\nA total of {Universe.errors} errors occured while processing all data");
+                Terminal.printInfo($"A total of {Universe.errors} errors occured while processing all data");
                 Terminal.printInfo($"{passes} files remain unchanged on disk");
                 Terminal.printWarning($"{fails} files changed\n");
                 Terminal.printInfo($"Preparing to transfer {changedFiles.Count} changed files...");
 
-                changedFiles.Add("TARGET_IP_ADDRESS", remoteLIPs[0]);                 //TODO:::::::::: get the real target IP and put it here |
-                Terminal.printInfo($"!!!!!!!!!!!USING IP ADDRESS: {remoteLIPs[0]} for transfer");
+                changedFiles.Add("TARGET_IP_ADDRESS", TARGET_IP);                 //get the real target IP and put it here
+                Terminal.printInfo($"!!!!!!!!!!!USING IP ADDRESS: {TARGET_IP} for transfer");
                 string cmdLineArg = System.Text.Json.JsonSerializer.Serialize(changedFiles);
-                if (TARGET_IP.Equals(SERVER))
+                if (!TARGET_IP.Equals(SERVER))
                 {
                     Terminal.printInfo("Starting SUFTP over LAN...");
-                    Terminal.printInfo(startOnLAN($"'{cmdLineArg}'"));
-                    Terminal.printInfo("Files transferred");
+                    string transferResponse = startOnLAN($"{cmdLineArg}");
+                    if (transferResponse.Contains("LAN SERVER DID NOT RESPOND!"))
+                    {
+                        Universe.getRequest($"https://{SERVER}:{PORT}/error/errorCheck?sessID={SESSION_ID}&status=SET&data=use_inet");
+                        Terminal.printWarning("Network error occurred");
+                        Terminal.printWarning("Nothing fatal happened, but this might take a little longer...");
+                        Terminal.printInfo("Starting SUFTP over internet...");
+                        Terminal.printInfo(startOverInet($"{cmdLineArg}"));
+                    }
                 }
                 else
                 {
                     Terminal.printInfo("Starting SUFTP over internet...");
-                    Terminal.printInfo(startOverInet($"'{cmdLineArg}'"));
-                    Terminal.printInfo("Files transferred");
-
+                    Terminal.printInfo(startOverInet($"{cmdLineArg}"));
                 }
                 Console.Write("\n\n");
+                Universe.getRequest($"https://{SERVER}:{PORT}/error/errorCheck?sessID={SESSION_ID}&status=SET&data=complete");
             }
             //Andddddddd if the hash file isn't saved then create a whole new one and exit
             catch (System.IO.FileNotFoundException)
@@ -174,6 +185,7 @@ namespace SyncUp
                 catch (Exception e)
                 {
                     Terminal.printError("Sorry... we ran into a problem while parsing data: " + e.Message+"\nPlease report this problem and error message to the developer.");
+                    Terminal.printInfo("You can submit a bug report on SyncUp's GitHub or you can visit www.thatonetechcrew/communications and submit the issue there.\nPlease include the exact error message above.");
                 }
             }
 
@@ -221,6 +233,7 @@ namespace SyncUp
             catch (Exception e)
             {
                 Terminal.printError(e.Message);
+                Terminal.printErrorDetails(e.StackTrace);
                 Terminal.exitOnKeyPress();
             }
         }
@@ -309,8 +322,8 @@ namespace SyncUp
             // Redirect the output stream of the child process.
             p.StartInfo.UseShellExecute = false;
             p.StartInfo.RedirectStandardOutput = true;
-            p.StartInfo.Arguments = $@"{arguments}";
-            p.StartInfo.FileName = "\"C:\\Program Files\\SyncUp\\SUFTP\\SUFTP-client.exe\"";
+            p.StartInfo.Arguments = $@"client {arguments}";
+            p.StartInfo.FileName = "\"C:\\Program Files\\SyncUp\\SUFTP-all.exe\"";
             Terminal.printInfo(p.StartInfo.FileName+" "+p.StartInfo.Arguments); ////////////////////////////////////////////////////////////////////////////
             p.Start();
             // Do not wait for the child process to exit before
@@ -327,8 +340,8 @@ namespace SyncUp
             // Redirect the output stream of the child process.
             p.StartInfo.UseShellExecute = false;
             p.StartInfo.RedirectStandardOutput = true;
-            p.StartInfo.Arguments = $@"{arguments}";
-            p.StartInfo.FileName = "\"C:\\Program Files\\SyncUp\\SUFTP\\SUFTP-send.exe\"";
+            p.StartInfo.Arguments = $@"send {arguments}";
+            p.StartInfo.FileName = "\"C:\\Program Files\\SyncUp\\SUFTP-all.exe\"";
             Terminal.printInfo(p.StartInfo.FileName + " " + p.StartInfo.Arguments); ////////////////////////////////////////////////////////////////////////////
             p.Start();
 

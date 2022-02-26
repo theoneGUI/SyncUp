@@ -34,6 +34,7 @@ public static class Terminal
     {
         printInfo("\n\nPress any key to exit...");
         Console.ReadKey();
+        Environment.Exit(100);
     }
 
     public static void printInfo(string info)

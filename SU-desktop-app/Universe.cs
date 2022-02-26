@@ -123,17 +123,18 @@ public static class Universe
         p.StartInfo.RedirectStandardOutput = true;
         p.StartInfo.CreateNoWindow = true;
 
-        p.StartInfo.Arguments = $"/C \"{exe}\" {parameters}";
-        p.StartInfo.FileName = "cmd.exe";
+        p.StartInfo.Arguments = $"{parameters}";
+        p.StartInfo.FileName = $"{exe}";
         p.Start();
         string response = p.StandardOutput.ReadToEnd();
         p.WaitForExit();
         return response;
     }
-    public static void runDoUpdates() { runCommand(@"C:\Program Files\SyncUp\SU_UpdateCheck.exe", "doUpdates");  }
+    public static void runDoUpdates() { runCommand(@"C:\Program Files\SyncUp\SU-UpdateCheck.exe", "doUpdates");  }
     public static void UpdateCheck()
     {
         string report = runCommand(@"C:\Program Files\SyncUp\SU-UpdateCheck.exe", "");
+        Terminal.printInfo("Update check result: " + report);
         if (!report.Equals("all_up_to_date"))
         {
             Terminal.printWarning("Updates required.");
