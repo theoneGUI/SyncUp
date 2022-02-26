@@ -10,7 +10,7 @@ namespace SyncUpAPI {
     public class Program {
         public static void Main(string[] args)
         {
-            Thread ticker = new Thread(Universe.DoTick);
+            Thread ticker = new Thread(Universe.DoQSSTick);
             ticker.Start();
             Console.CancelKeyPress += delegate
             {

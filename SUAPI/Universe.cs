@@ -2,12 +2,12 @@
 using System.Collections.Generic;
 using System.Threading;
 using System.IO;
-using System.Diagnostics;
 
 namespace SyncUpAPI {
     public class Universe {
         public static Dictionary<string, string[]> openRequests = new Dictionary<string, string[]>();
         public static Dictionary<string, List<string>> readyToDelete = new Dictionary<string, List<string>>();
+        public static Dictionary<string, string> errors = new Dictionary<string, string>();
         public static bool END_OF_WORLD = false;
 
         public const string ascii_upper = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
@@ -43,20 +43,46 @@ namespace SyncUpAPI {
             return System.Text.Encoding.UTF8.GetString(convert);
         }
 
-        public static void DoTick()
+        public static void DoQSSTick()
         {
+            Thread t = new Thread(DoErrorTick);
+            t.Start();
             while (true)
             {
                 Tick();
                 Thread.Sleep(6000);
                 if (END_OF_WORLD)
                 {
-                    Logg.printInfo("Ticker thread killed");
+                    Logg.printInfo("QSS ticker thread killed");
+                    t.Join();
+                    Logg.printInfo("Error ticker thread killed");
                     break;
                 }
             }
         }
 
+        public static void DoErrorTick()
+        {
+            while (true)
+            {
+                foreach (System.Collections.Generic.KeyValuePair<string, string> pair in errors)
+                {
+                    if (pair.Value.Equals("complete"))
+                    {
+                        errors.Remove(pair.Key);
+                    }
+                }
+                for (int i = 0; i < 1000; i++)
+                {
+                    if (END_OF_WORLD)
+                        break;
+                    else
+                        Thread.Sleep(3600);
+                }
+                if (END_OF_WORLD)
+                    break;
+            }
+        }
         public static string VersionLookup(string assembly)
         {
             string[] versionFileContents = File.ReadAllLines("versions.data");
@@ -73,19 +99,5 @@ namespace SyncUpAPI {
             return result;
         }
 
-        public static string VersionLookup2(string assembly)
-        {
-            string[] filesToGetVers = Directory.GetFiles("/var/www/html/current");
-            const string absPath = "/var/www/html/current/";
-            string response = "assembly_not_found";
-            foreach (string file in filesToGetVers)
-            {
-                if (file.Equals(assembly))
-                {
-                    response = FileVersionInfo.GetVersionInfo(absPath + file).FileVersion;
-                }
-            }
-            return response;
-        }
     }
 }
